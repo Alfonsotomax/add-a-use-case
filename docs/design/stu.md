@@ -139,7 +139,13 @@ sequenceDiagram
 ## Key decisions
 
 1. **A dedicated `PATCH …/deactivate` action, not `PUT /students/{studentId}` with `enabled = false`.** The generic update route is guarded by `UserOwnershipAuthorizationManager`, which admits the student themselves. It also mixes a lifecycle change with profile edits, and it has no place for the 409 of extension 3a. A verb sub-resource under `PATCH` follows `PATCH /teams/{teamId}/section`. UC-STU-reactivate-student gets the sibling `…/reactivate`.
-2. **A new `StudentLifecycleAuthorizationManager` encodes BR-student-lifecycle exactly**: course admin of the student's course ∨ instructor assigned to the student's course section, never self. Rejected: `UserOwnershipAuthorizationManager` (admits self) and `StudentInstructorAuthorizationManager` (denies a course admin who is not also assigned to that course section). No scoped query (enforcement point 2) is needed: the only object named is the path id the manager itself resolved, and no team scope applies.
+2. **A new `StudentLifecycleAuthorizationManager` encodes BR-student-lifecycle exactly**: course admin of the student's course ∨ instructor assigned to the student's course section, never self. "A course admin" means the course admin of *her* course, because the glossary makes the role course-scoped ("different Courses have different course admins"). Everyone else is refused at the route rule with 403 and nothing changes:
+   - a student, herself included;
+   - an instructor of another course section, in her course or another;
+   - the course admin of another course;
+   - an `admin`-role user who is not her course's course admin, since the manager grants nothing by role.
+
+   An unauthenticated caller, or one whose own account is deactivated, gets 401 before the rule is consulted. The SPA routes a 403 to the forbidden page. An instructor not assigned to her course section never sees her in the Students list anyway: the list is scoped to the caller's default course section, and switching to a course section requires being assigned to it. Rejected: `UserOwnershipAuthorizationManager` (admits self) and `StudentInstructorAuthorizationManager` (denies a course admin who is not also assigned to that course section). No scoped query (enforcement point 2) is needed: the only object named is the path id the manager itself resolved, and no team scope applies.
 3. **FR-SEC-active-account is enforced in the JWT authentication converter, on every bearer-token request**, with one primary-key `exists` query. Rejected alternatives:
    - A token blocklist: it adds revocation state and still needs a per-request read.
    - A shorter token lifetime: the gap remains, and every user re-authenticates more often.
@@ -189,6 +195,10 @@ No delta. The `enabled` column of `PeerEvaluationUser` already exists; the only 
 | UC-STU-deactivate-student, caller is a student (self or another) | integration | 403; `enabled` unchanged |
 | UC-STU-deactivate-student, instructor of another course section | integration | 403 |
 | UC-STU-deactivate-student, unknown student id | integration | 403 (guard fails closed) |
+| UC-STU-deactivate-student, course admin not assigned to the student's course section | integration | 200. The seed's course admin is assigned to section 1, so this needs a student in a course section of her course she is not assigned to; the main-success test alone would hide a manager that checked assignment only |
+| UC-STU-deactivate-student, course admin of another course | integration | 403; `enabled` unchanged |
+| UC-STU-deactivate-student, unauthenticated | integration | 401 |
+| UC-STU-deactivate-student, deactivated caller with a live token | integration | 401 (FR-SEC-active-account), before the route rule is consulted |
 | FR-SEC-active-account, live token | integration | a token obtained before deactivation, used on a protected route afterwards (e.g. `GET /students/{own id}`) → 401 |
 | FR-SEC-active-account, active account | unit (`ActiveAccountJwtAuthenticationConverterTest`) | an active user converts with the claim's authorities unchanged; a deactivated one, or a token with no `userId` claim, throws `DisabledException` |
 | UC-STU-deactivate-student, team membership kept | integration | after deactivation, `GET /students/teams/{teamId}` still lists the student, with `enabled` false |
@@ -203,6 +213,7 @@ Fixtures: the integration tests use the `DataInitializer` seed (course admin `b.
 ## Open questions / risks
 
 - **The generic `enabled` toggle stays for now.** `StudentService.updateStudent` and `EditStudentForm.vue` still write `enabled`, so until UC-STU-reactivate-student is built it remains the only way to reactivate a student. Remove both when the `…/reactivate` endpoint lands; until then there are two ways to deactivate.
+- **A course admin may not be able to reach the Deactivate control (OI-66).** The server allows the course admin of her course, but the Students list shows only the caller's default course section. `PUT /instructors/sections/{sectionId}/default` is guarded by `SectionSecurityService.canAccessSection`, which admits only instructors assigned to that course section. `SectionService.saveSection` does not assign the course admin to the course sections she creates. So a course admin not assigned to the student's course section can deactivate her through the API but cannot find her in the UI. The workaround is to assign herself to the course section first. The fix belongs to the course-section access rule, which other routes share, not to this use case.
 - **Future team-roster consumers.** Keeping a deactivated student on her team (decision 5) makes "active member" a condition every new team-roster consumer must apply. Three consumers are handled today. A new team-level report or count that iterates `Team.getStudents()` unfiltered will count a withdrawn student.
 - **Cost of the per-request check.** It adds one indexed primary-key query to every authenticated request. That is negligible at single-tenant scale. If it ever shows up in tracing, cache it with a short TTL rather than dropping it.
 - **Out of scope, logged as OI-65:** `DELETE /students/{studentId}` is guarded by `UserOwnershipAuthorizationManager`, so a student passes the route rule for their own account, contrary to BR-student-lifecycle (course admin only).
