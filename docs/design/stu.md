@@ -1,7 +1,7 @@
 # Students (STU) Design
 
 > Realizes: UC-STU-deactivate-student
-> Depends on: FR-SEC-active-account, BR-student-lifecycle, BR-submission-owed (already excludes a deactivated student; see [not.md](not.md))
+> Depends on: FR-SEC-active-account, BR-student-lifecycle, BR-submission-owed (a deactivated student is owed nothing and is not evaluated; see [not.md](not.md) and UC-EVA-submit-evaluation)
 > See: [use cases](../requirements/use-cases.md#student), [SRS security requirements](../requirements/software-requirements-specification.md), [architectural-design.md](architectural-design.md#shared-foundation-components) (shared foundation component view, Crosscutting Concepts › Security & Compliance)
 > Designed against `main` at `59f0267` (2026-11-03).
 
@@ -63,9 +63,11 @@ classDiagram
 | `StudentLifecycleAuthorizationManager` | `backend/.../security/authorizationmanagers/` | new; UC-STU-reactivate-student reuses it |
 | `ActiveAccountJwtAuthenticationConverter` | `backend/.../security/` | new; wraps the existing `jwtAuthenticationConverter()` bean in [SecurityConfiguration.java](../../backend/src/main/java/team/projectpulse/security/SecurityConfiguration.java) and is wired into `oauth2ResourceServer().jwt()` |
 | `UserRepository.existsByIdAndEnabledTrue` | [UserRepository.java](../../backend/src/main/java/team/projectpulse/user/UserRepository.java) | new derived query |
-| Already-deactivated conflict | `system/exception` | a domain exception mapped by `ExceptionHandlerAdvice` to `StatusCode.CONFLICT`; reuse an existing conflict exception if the advice already maps one |
-| `deactivateStudent(id)` | [apis/student/index.ts](../../frontend/src/apis/student/index.ts) | new |
-| Deactivate control | [Students.vue](../../frontend/src/pages/students/Students.vue) | extended: a Deactivate button in the Operations column, shown only for an active student, opening an `ElMessageBox.confirm`; the Status tag reads `Active` / `Deactivated` (the use cases' vocabulary) instead of `Enabled` / `Disabled` |
+| `StudentAlreadyDeactivatedException` | `system/exception` | new; mapped in [ExceptionHandlerAdvice.java](../../backend/src/main/java/team/projectpulse/system/exception/ExceptionHandlerAdvice.java) exactly like `SectionLockRequiredException`: HTTP 409 **and** `Result.code` `StatusCode.CONFLICT`, message "This student is already deactivated." |
+| Route rule | [SecurityConfiguration.java](../../backend/src/main/java/team/projectpulse/security/SecurityConfiguration.java) | new `requestMatchers(HttpMethod.PATCH, baseUrl + "/students/{studentId}/deactivate").access(studentLifecycleAuthorizationManager)` in the `/students/**` block, above the `denyAll()` catch-all. No existing rule shadows it: the others match `/students/{studentId}` exactly |
+| `deactivateStudent(studentId)` | [apis/student/index.ts](../../frontend/src/apis/student/index.ts) | new; `PATCH /students/{studentId}/deactivate` through the shared instance, typed like the module's existing calls |
+| Deactivate control | [Students.vue](../../frontend/src/pages/students/Students.vue) | extended: a Deactivate button in the Operations column, shown only for an active student, opening an `ElMessageBox.confirm` (`type: 'warning'`) whose body states the consequences in the use case's Associated Information. On success, `ElMessage.success` and reload the current page. On a rejected call, add no second message (the shared instance has already shown the error toast) and reload. Only the Status tag changes from `Enabled` / `Disabled` to `Active` / `Deactivated` (the use cases' vocabulary) |
+| Active-teammate list | [SubmitTeamsEvaluations.vue](../../frontend/src/pages/evaluations/SubmitTeamsEvaluations.vue) | extended: filters the `findStudentsByTeamId` result to `enabled` teammates, per the amended UC-EVA-submit-evaluation step 2 |
 
 ## Sequence
 
@@ -139,9 +141,10 @@ sequenceDiagram
    - A shorter token lifetime: the gap remains, and every user re-authenticates more often.
    - A check inside each authorization manager: it would miss the routes guarded by `hasAuthority` or `.authenticated()`, such as `POST /students/search`.
 
-   The converter throws `DisabledException`. `BearerTokenAuthenticationFilter` turns that into a 401 through the existing entry point, and the SPA's shared Axios instance already handles a 401 by clearing the token and redirecting to login. The same check covers a deactivated instructor (UC-INS-deactivate-instructor) at no extra cost.
+   The converter is built inside `SecurityConfiguration` (with `UserRepository` injected) and passed to `.jwt(jwt -> jwt.jwtAuthenticationConverter(…))`. It reads the `userId` claim as the `Integer` that `JwtProvider` writes; a token with no `userId` claim is treated as inactive. On an inactive account it throws `DisabledException`. `BearerTokenAuthenticationFilter` turns that into a 401 through the existing entry point, and the SPA's shared Axios instance already handles a 401 by clearing the token and redirecting to login. The same check covers a deactivated instructor (UC-INS-deactivate-instructor) at no extra cost.
 4. **Extension 3a returns 409, not an idempotent 200**, so an actor working from a stale list is told the student was already deactivated, as the extension requires.
-5. **Deactivation touches only the `enabled` flag.** Team membership, weekly activity reports, and peer evaluations stay as they are. Removing the student from their team was rejected: reactivation could not restore it, and BR-student-lifecycle requires the student's submitted work to be preserved. Excluding a deactivated student from reminders and teammate evaluation is already handled by BR-submission-owed.
+5. **Deactivation touches only the `enabled` flag.** Team membership, weekly activity reports, and peer evaluations, both those the student wrote and those written of them, stay as they are. Removing the student from their team was rejected: reactivation could not restore it, and BR-student-lifecycle requires the student's submitted work to be preserved.
+6. **Teammates stop evaluating a deactivated student.** BR-submission-owed already counts only teammates "whose account is active", and the reminders apply it (`SubmissionStatusService`). The evaluation form, however, listed every team member, and UC-EVA-submit-evaluation step 2 said "every team member", so the two contradicted each other. Step 2 now reads "every team member whose account is active", and the form filters the roster it already fetches. Rejected: making `GET /students/teams/{teamId}` return active students only, because that is a general team-roster read, and an instructor's view of the team should still show the deactivated member. Also rejected: keeping a deactivated student evaluable. A withdrawn student's teammates would then owe weekly scores for someone no longer working with them.
 
 ## Data model
 
@@ -165,7 +168,10 @@ No delta. The `enabled` column of `PeerEvaluationUser` already exists; the only 
 | UC-STU-deactivate-student, instructor of another course section | integration | 403 |
 | UC-STU-deactivate-student, unknown student id | integration | 403 (guard fails closed) |
 | FR-SEC-active-account, live token | integration | a token obtained before deactivation, used on a protected route afterwards (e.g. `GET /students/{own id}`) → 401 |
-| FR-SEC-active-account, active account | unit (`ActiveAccountJwtAuthenticationConverterTest`) | an active user converts with the claim's authorities unchanged; a deactivated one throws `DisabledException` |
+| FR-SEC-active-account, active account | unit (`ActiveAccountJwtAuthenticationConverterTest`) | an active user converts with the claim's authorities unchanged; a deactivated one, or a token with no `userId` claim, throws `DisabledException` |
+| UC-EVA-submit-evaluation step 2 (amended), deactivated teammate | manual / Cypress (no frontend unit tests exist) | after a teammate is deactivated, the peer evaluation form lists only the active teammates, self included |
+
+Fixtures: the integration tests use the `DataInitializer` seed (course admin `b.wei@abc.edu`, an instructor assigned to the student's course section, an instructor of another course section, students). Each test that deactivates a seed student must leave the seed as it found it, following the existing isolation pattern of `StudentIntegrationTest`. Extension 3a deactivates first, then repeats the request. Tokens come from the existing login helper of the integration tests.
 
 ## Open questions / risks
 
