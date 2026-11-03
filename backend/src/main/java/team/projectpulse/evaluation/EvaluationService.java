@@ -34,6 +34,7 @@ public class EvaluationService {
     private static final String RUBRIC_MISMATCH_MESSAGE = "This evaluation was scored against a different set of criteria and can no longer be updated.";
     private static final String NOT_PREVIOUS_WEEK_MESSAGE = "You can only submit evaluations for the previous week.";
     private static final String WINDOW_CLOSED_MESSAGE = "The submission window for this peer evaluation has closed, so it can no longer be changed.";
+    private static final String DEACTIVATED_EVALUATEE_MESSAGE = "You cannot evaluate a deactivated teammate.";
 
     private final PeerEvaluationRepository evaluationRepository;
     private final StudentRepository studentRepository;
@@ -67,6 +68,8 @@ public class EvaluationService {
             throw new PeerEvaluationIllegalArgumentException("The evaluator and evaluatee must be on the same team.");
         }
 
+        requireActiveEvaluatee(newPeerEvaluation.getEvaluatee());
+
         // Make sure this is not a duplicate evaluation
         if (this.evaluationRepository.findByWeekAndEvaluatorIdAndEvaluateeId(newPeerEvaluation.getWeek(), newPeerEvaluation.getEvaluator().getId(), newPeerEvaluation.getEvaluatee().getId()).isPresent()) {
             throw new PeerEvaluationIllegalArgumentException("You have already submitted an evaluation for " + newPeerEvaluation.getEvaluatee().getFirstName() + " in this week.");
@@ -81,12 +84,24 @@ public class EvaluationService {
                     // The week is read off the stored evaluation rather than off the update, because the caller
                     // writes the payload and could otherwise name an open week to reopen a closed evaluation.
                     requireOpenSubmissionWindow(oldEvaluation.getEvaluator().getSection(), oldEvaluation.getWeek(), WINDOW_CLOSED_MESSAGE);
+                    // The evaluatee is read off the stored evaluation too, for the same reason as the week
+                    requireActiveEvaluatee(oldEvaluation.getEvaluatee());
                     rescore(oldEvaluation, update.getRatings());
                     oldEvaluation.setPublicComment(update.getPublicComment());
                     oldEvaluation.setPrivateComment(update.getPrivateComment());
                     return this.evaluationRepository.save(oldEvaluation);
                 })
                 .orElseThrow(() -> new ObjectNotFoundException("evaluation", evaluationId));
+    }
+
+    /**
+     * Refuses a submission, or an edit of one, of a teammate whose account is deactivated (BR-deactivated-evaluatee).
+     * The rule covers the open week too, so it reads the account's current state; no deactivation date is needed.
+     */
+    private void requireActiveEvaluatee(Student evaluatee) {
+        if (!evaluatee.isEnabled()) {
+            throw new PeerEvaluationIllegalArgumentException(DEACTIVATED_EVALUATEE_MESSAGE);
+        }
     }
 
     /**
@@ -225,6 +240,11 @@ public class EvaluationService {
 
         // For each student, compute her average total score, collect all public comments and private comments, and compute rating averages for each criterion.
         students.forEach(student -> {
+            // BR-deactivated-evaluatee: a deactivated student is listed only for a week in which she was evaluated.
+            // An active student no one evaluated keeps her 0.0 row.
+            if (!student.isEnabled() && !this.evaluationRepository.existsByWeekAndEvaluateeId(week, student.getId())) {
+                return;
+            }
             PeerEvaluationAverage peerEvaluationAverage = getPeerEvaluationAverage(week, student);
             report.getPeerEvaluationAverages().add(peerEvaluationAverage);
         });
