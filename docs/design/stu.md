@@ -154,12 +154,19 @@ sequenceDiagram
    - Filtering only in the form: a client-side check is not access control.
    - Making `GET /students/teams/{teamId}` return active students only: it is a general team-roster read, and an instructor's view of the team should still show the deactivated member.
 
-   An evaluation of her written before deactivation is kept and counts. An edit to it after deactivation is refused.
+   Deactivation is the cut-off for every week, including the previous week whose window is still open. Evaluations of her already written stand and count, but an edit to one after deactivation is refused. Rejected: letting teammates finish the weeks she worked. That needs a deactivation date the data model does not have, and BR-submission-owed judges "active" by current state, so teammates stop *owing* her the moment she is deactivated. Refusing the evaluation keeps "can" consistent with "owes".
+
+   Checked against the code (`main` at `59f0267`):
+   - **Owed** (`SubmissionStatusService.findOwedItems`) already builds each team's required evaluatees from active students only, so it matches as is.
+   - **Submit and edit** (`EvaluationService.addPeerEvaluation` / `updatePeerEvaluation`) do not match today. `add` checks only the window and the team. `update` checks only the window, with no evaluatee check at all, so the guard goes into both.
+   - **The form** (`SubmitTeamsEvaluations.vue`) sends one request per teammate through `Promise.all`. On a form loaded before she was deactivated, her request is refused while the others save, and the submit as a whole appears to fail. On a rejected submit the form therefore reloads the teammate list and the evaluator's saved evaluations, so the evaluator sees what was kept and that she is gone.
 7. **The section peer-evaluation report shows a deactivated student only for weeks in which she was evaluated.** It lists every student on a team. Because she stays on her team (decision 5), she would otherwise get a row with an average of 0.0 for every week after deactivation, which reads as her teammates rating her zero. Rejected:
    - Dropping every deactivated student from the report: it erases the weeks she was actually evaluated.
    - Marking the row "deactivated" with no score: it changes the report's shape for one case.
 
    An active student no one evaluated still gets her 0.0 row, as today. That is existing behaviour, not this use case's concern.
+
+   Checked against the code: `generateWeeklyPeerEvaluationReportForSection` keeps every student whose team is set. `getPeerEvaluationAverage` already loads `findByWeekAndEvaluateeId(week, studentId)`, so the rule is "skip a deactivated student when that list is empty". The weeks she appears in are therefore those before deactivation, the open week if anyone (herself included) evaluated her before the cut-off, and none after.
 
 ## Data model
 
@@ -188,7 +195,8 @@ No delta. The `enabled` column of `PeerEvaluationUser` already exists; the only 
 | UC-EVA-submit-evaluation step 2 (amended), evaluating a deactivated teammate | unit (`EvaluationServiceTest`) + integration | `POST /evaluations` and `PUT /evaluations/{evaluationId}` naming a deactivated evaluatee → 400; nothing saved |
 | UC-EVA-submit-evaluation step 2 (amended), evaluation written before deactivation | unit | it is still returned and still counts in the evaluatee's average |
 | Section peer-evaluation report, deactivated student | unit (`EvaluationServiceTest`) | a deactivated student has a row for a week with evaluations of her and no row for a week without; an active student with no evaluations still has a 0.0 row |
-| UC-EVA-submit-evaluation step 2 (amended), form | manual / Cypress (no frontend unit tests exist) | after a teammate is deactivated, the peer evaluation form lists only the active teammates, self included |
+| UC-EVA-submit-evaluation step 2 (amended), form | manual / Cypress (no frontend unit tests exist) | after a teammate is deactivated, the peer evaluation form lists only the active teammates, self included; a form opened before her deactivation and then submitted saves the others, refuses hers, and reloads without her |
+| BR-submission-owed after deactivation | unit (`SubmissionStatusServiceTest`, existing case) | a teammate who evaluated every active member but not the deactivated one owes nothing. This case already exists; keep it green |
 
 Fixtures: the integration tests use the `DataInitializer` seed (course admin `b.wei@abc.edu`, an instructor assigned to the student's course section, an instructor of another course section, students). Each test that deactivates a seed student must leave the seed as it found it, following the existing isolation pattern of `StudentIntegrationTest`. Extension 3a deactivates first, then repeats the request. Tokens come from the existing login helper of the integration tests.
 
