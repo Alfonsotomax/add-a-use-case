@@ -5,6 +5,7 @@ import type {
   SearchStudentByCriteriaResponse,
   CreateStudentResponse,
   DeleteStudentResponse,
+  DeactivateStudentResponse,
   FindStudentByIdResponse,
   UpdateStudentResponse,
   Student,
@@ -39,3 +40,7 @@ export const updateStudent = (updatedStudent: Student) =>
 
 export const deleteStudent = (id: number) =>
   request.delete<any, DeleteStudentResponse>(`${API.STUDENTS_ENDPOINT}/${id}`)
+
+// UC-STU-deactivate-student: 409 CONFLICT when the student is already deactivated (extension 3a)
+export const deactivateStudent = (id: number) =>
+  request.patch<any, DeactivateStudentResponse>(`${API.STUDENTS_ENDPOINT}/${id}/deactivate`)
