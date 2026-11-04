@@ -47,12 +47,23 @@ classDiagram
     class StudentRepository {
         <<reused, student>>
     }
+    class PeerEvaluationRepository {
+        <<reused, evaluation>>
+        +existsByWeekAndEvaluateeId(week, studentId) boolean  «new»
+    }
+    class EvaluationService {
+        <<reused, evaluation>>
+        +addPeerEvaluation(evaluation)  «changed»
+        +updatePeerEvaluation(id, update)  «changed»
+        +generateWeeklyPeerEvaluationReportForSection(sectionId, week)  «changed»
+    }
     StudentController --> StudentService
     StudentService --> StudentRepository
     StudentLifecycleAuthorizationManager --> StudentSecurityService
     StudentSecurityService --> StudentRepository
     ActiveAccountJwtAuthenticationConverter --> JwtAuthenticationConverter : delegates authorities
     ActiveAccountJwtAuthenticationConverter --> UserRepository
+    EvaluationService --> PeerEvaluationRepository
 ```
 
 | Component | File | Reused / new |
@@ -68,8 +79,8 @@ classDiagram
 | `deactivateStudent(studentId)` | [apis/student/index.ts](../../frontend/src/apis/student/index.ts) | new; `PATCH /students/{studentId}/deactivate` through the shared instance, typed like the module's existing calls |
 | Deactivate control | [Students.vue](../../frontend/src/pages/students/Students.vue) | extended: a Deactivate button in the Operations column, shown only for an active student, opening an `ElMessageBox.confirm` (`type: 'warning'`) whose body states the consequences in the use case's Associated Information. On success, `ElMessage.success` and reload the current page. On a rejected call, add no second message (the shared instance has already shown the error toast) and reload. Only the Status tag changes from `Enabled` / `Disabled` to `Active` / `Deactivated` (the use cases' vocabulary) |
 | Deactivated-evaluatee guard | [EvaluationService.java](../../backend/src/main/java/team/projectpulse/evaluation/EvaluationService.java) `addPeerEvaluation`, `updatePeerEvaluation` | extended: next to the existing same-team check, enforce BR-deactivated-evaluatee with `PeerEvaluationIllegalArgumentException` (400) |
-| Section report rows | `EvaluationService.generateWeeklyPeerEvaluationReportForSection` | extended: applies BR-deactivated-evaluatee's listing clause (decision 7) |
-| Active-teammate list | [SubmitTeamsEvaluations.vue](../../frontend/src/pages/evaluations/SubmitTeamsEvaluations.vue) | extended: filters the `findStudentsByTeamId` result to `enabled` teammates, per the amended UC-EVA-submit-evaluation step 2. This is a convenience only; the server guard above is the enforcement |
+| Section report rows | `EvaluationService.generateWeeklyPeerEvaluationReportForSection`, new `PeerEvaluationRepository.existsByWeekAndEvaluateeId` | extended: applies BR-deactivated-evaluatee's listing clause (decision 7) |
+| Active-teammate list | [SubmitTeamsEvaluations.vue](../../frontend/src/pages/evaluations/SubmitTeamsEvaluations.vue) | extended: filters the `findStudentsByTeamId` result to `enabled` teammates, per the amended UC-EVA-submit-evaluation step 2, and in edit mode filters the evaluator's saved evaluations to those same teammates (decision 6). This is a convenience only; the server guard above is the enforcement |
 
 ## Sequence
 
@@ -145,7 +156,7 @@ sequenceDiagram
    - A shorter token lifetime: the gap remains, and every user re-authenticates more often.
    - A check inside each authorization manager: it would miss the routes guarded by `hasAuthority` or `.authenticated()`, such as `POST /students/search`.
 
-   The converter is built inside `SecurityConfiguration` (with `UserRepository` injected) and passed to `.jwt(jwt -> jwt.jwtAuthenticationConverter(…))`. It reads the `userId` claim as the `Integer` that `JwtProvider` writes; a token with no `userId` claim is treated as inactive. On an inactive account it throws `DisabledException`. `BearerTokenAuthenticationFilter` turns that into a 401 through the existing entry point, and the SPA's shared Axios instance already handles a 401 by clearing the token and redirecting to login. The same check covers a deactivated instructor (UC-INS-deactivate-instructor) at no extra cost.
+   The converter is built inside `SecurityConfiguration` (with `UserRepository` injected) and passed to `.jwt(jwt -> jwt.jwtAuthenticationConverter(…))`. It reads the `userId` claim as any number: `JwtProvider` writes an `Integer`, but a decoded token returns a JSON number as a `Long`. A token with no numeric `userId` claim is treated as inactive. Authorities are whatever the wrapped converter produces, unchanged (under Spring Security 7 that includes its own `FACTOR_BEARER` authority). On an inactive account it throws `DisabledException`. `BearerTokenAuthenticationFilter` turns that into a 401 through the existing entry point, and the SPA's shared Axios instance already handles a 401 by clearing the token and redirecting to login. The same check covers a deactivated instructor (UC-INS-deactivate-instructor) at no extra cost.
 4. **Extension 3a returns 409, not an idempotent 200**, so an actor working from a stale list is told the student was already deactivated, as the extension requires.
 5. **Deactivation writes only the `enabled` flag.** It leaves `Student.team` and every activity and peer evaluation untouched, which is how BR-student-lifecycle's preserved work and team membership are realized. The cost of keeping her on the team is that every team-roster consumer must tell active members from deactivated ones. The three current consumers are the owed computation (`SubmissionStatusService`, already filtering), evaluation submission (decision 6), and the section peer-evaluation report (decision 7).
 6. **BR-deactivated-evaluatee is enforced on the server.** `addPeerEvaluation` and `updatePeerEvaluation` reject a deactivated evaluatee next to the existing same-team check, and the form filters the roster it already fetches. Because the rule covers the open week, the check reads the account's current state; no deactivation date is needed or stored. Rejected:
@@ -156,11 +167,12 @@ sequenceDiagram
    - **Owed** (`SubmissionStatusService.findOwedItems`) already builds each team's required evaluatees from active students only, so it matches as is.
    - **Submit and edit** (`EvaluationService.addPeerEvaluation` / `updatePeerEvaluation`) do not match today. `add` checks only the window and the team. `update` checks only the window, with no evaluatee check at all, so the guard goes into both.
    - **The form** (`SubmitTeamsEvaluations.vue`) sends one request per teammate through `Promise.all`. On a form loaded before she was deactivated, her request is refused while the others save, and the submit as a whole appears to fail. On a rejected submit the form therefore reloads the teammate list and the evaluator's saved evaluations, so the evaluator sees what was kept and that she is gone.
-7. **The section peer-evaluation report applies BR-deactivated-evaluatee's listing clause in the service.** `generateWeeklyPeerEvaluationReportForSection` keeps every student whose team is set, and `getPeerEvaluationAverage` already loads `findByWeekAndEvaluateeId(week, studentId)`. So the change is to skip a deactivated student when that list is empty. Rejected: filtering in the SPA, which would leave the API returning rows the rule says the report does not list. An active student no one evaluated keeps her 0.0 row, as today; the rule says nothing about her.
+   - **Edit mode** loads the evaluator's saved evaluations, not the roster. A saved evaluation of a since-deactivated teammate would be shown and refused on every update, reload included, so the form drops saved evaluations whose evaluatee is not an active teammate.
+7. **The section peer-evaluation report applies BR-deactivated-evaluatee's listing clause in the service.** `generateWeeklyPeerEvaluationReportForSection` keeps every student whose team is set, and `getPeerEvaluationAverage` already loads `findByWeekAndEvaluateeId(week, studentId)`. So the change is to skip a deactivated student when she has no evaluation that week. As built, that is a separate `existsByWeekAndEvaluateeId` read, run only for a deactivated student, so `getPeerEvaluationAverage` (shared with the per-student summaries) is left unchanged. Rejected: filtering in the SPA, which would leave the API returning rows the rule says the report does not list. An active student no one evaluated keeps her 0.0 row, as today; the rule says nothing about her.
 
 ## Data model
 
-No delta. The `enabled` column of `PeerEvaluationUser` already exists; the only addition is a derived query on `UserRepository`.
+No delta. The `enabled` column of `PeerEvaluationUser` already exists; the only additions are two derived queries, `UserRepository.existsByIdAndEnabledTrue` and `PeerEvaluationRepository.existsByWeekAndEvaluateeId`.
 
 ## Reuse & cross-cutting
 
@@ -196,6 +208,7 @@ Fixtures: the integration tests use the `DataInitializer` seed (course admin `b.
 
 ## Open questions / risks
 
+- **Where the Deactivate control lives.** UC-STU-deactivate-student step 2 has the actor view the student's details (UC-STU-view-student) before choosing to deactivate. The control is in the Students list instead, where a row click opens the performance dashboard and the Edit dialog shows the details. If the use case means a details view strictly, the step or the control's placement should change.
 - **The generic `enabled` toggle stays for now.** `StudentService.updateStudent` and `EditStudentForm.vue` still write `enabled`, so until UC-STU-reactivate-student is built it remains the only way to reactivate a student. Remove both when the `…/reactivate` endpoint lands; until then there are two ways to deactivate.
 - **A course admin may not be able to reach the Deactivate control (OI-66).** The server allows the course admin of her course, but the Students list shows only the caller's default course section. `PUT /instructors/sections/{sectionId}/default` is guarded by `SectionSecurityService.canAccessSection`, which admits only instructors assigned to that course section. `SectionService.saveSection` does not assign the course admin to the course sections she creates. So a course admin not assigned to the student's course section can deactivate her through the API but cannot find her in the UI. The workaround is to assign herself to the course section first. The fix belongs to the course-section access rule, which other routes share, not to this use case.
 - **Future team-roster consumers.** Keeping a deactivated student on her team (decision 5) makes "active member" a condition every new team-roster consumer must apply. Three consumers are handled today. A new team-level report or count that iterates `Team.getStudents()` unfiltered will count a withdrawn student.
