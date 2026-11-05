@@ -4,6 +4,7 @@ import team.projectpulse.section.Section;
 import team.projectpulse.section.SectionRepository;
 import team.projectpulse.system.UserUtils;
 import team.projectpulse.system.exception.ObjectNotFoundException;
+import team.projectpulse.system.exception.StudentAlreadyDeactivatedException;
 import team.projectpulse.user.userinvitation.UserInvitationService;
 import jakarta.transaction.Transactional;
 import org.springframework.data.domain.Page;
@@ -123,6 +124,25 @@ public class StudentService {
         }
 
         return this.studentRepository.save(oldStudent);
+    }
+
+    /**
+     * UC-STU-deactivate-student: revokes the student's access (FR-SEC-active-account) and nothing else. Her team
+     * membership, weekly activity reports, and peer evaluations are kept (BR-student-lifecycle), so she can be
+     * reactivated. Who may call this is decided by the route rule, not here.
+     *
+     * @throws StudentAlreadyDeactivatedException extension 3a
+     */
+    public Student deactivateStudent(Integer studentId) {
+        Student student = this.studentRepository.findById(studentId)
+                .orElseThrow(() -> new ObjectNotFoundException("student", studentId));
+        // Check-and-set in one conditional UPDATE: a separate read then write would let two concurrent requests
+        // both see her enabled and both succeed, instead of the loser getting extension 3a's 409.
+        if (this.studentRepository.disableIfEnabled(studentId) == 0) {
+            throw new StudentAlreadyDeactivatedException();
+        }
+        student.setEnabled(false); // keep the loaded entity in step with the row
+        return student;
     }
 
     public void deleteStudent(Integer studentId) {

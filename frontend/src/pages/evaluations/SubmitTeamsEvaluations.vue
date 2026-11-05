@@ -182,7 +182,9 @@ onMounted(async () => {
 async function loadStudents() {
   // On the back end, the page number starts from 0, so subtract 1 here
   const result: FindStudentByTeamIdResponse = await findStudentsByTeamId(teamId.value)
-  students.value = result.data
+  // UC-EVA-submit-evaluation step 2: only active teammates, self included, are evaluated (BR-deactivated-evaluatee).
+  // A convenience only; the server refuses an evaluation of a deactivated teammate either way.
+  students.value = result.data.filter((student) => student.enabled)
 }
 
 // Load criteria information
@@ -204,7 +206,10 @@ async function prepareStartingPeerEvaluations() {
 
   // If the student has already submitted evaluations for the current week, load them
   if (result.data.length > 0) {
-    peerEvalutions.value = result.data
+    // An evaluation of a teammate deactivated since it was written can no longer be edited, so leave it out;
+    // otherwise every update would be refused for her
+    const activeIds = new Set(students.value.map((student) => student.id))
+    peerEvalutions.value = result.data.filter((evaluation) => activeIds.has(evaluation.evaluateeId))
     isNewSubmission = false
   } else {
     // If not, create a new set of evaluations
@@ -233,7 +238,12 @@ async function submitPeerEvaluations() {
       return result.data
     })
     isLoading.value = true
-    peerEvalutions.value = await Promise.all(submitPromises) // Wait for all promises to resolve
+    try {
+      peerEvalutions.value = await Promise.all(submitPromises) // Wait for all promises to resolve
+    } catch {
+      await reloadAfterRejectedSubmit()
+      return
+    }
     isNewSubmission = false // Change to update mode
     ElMessage.success('Peer evaluations submitted successfully')
     isLoading.value = false
@@ -253,8 +263,25 @@ async function updatePeerEvaluations() {
     })
 
     isLoading.value = true
-    peerEvalutions.value = await Promise.all(submitPromises) // Wait for all promises to resolve
+    try {
+      peerEvalutions.value = await Promise.all(submitPromises) // Wait for all promises to resolve
+    } catch {
+      await reloadAfterRejectedSubmit()
+      return
+    }
     ElMessage.success('Peer evaluations updated successfully')
+    isLoading.value = false
+  }
+}
+
+// One request is sent per teammate, so a refused one (e.g. a teammate deactivated after the form was opened) can
+// leave the others saved. The shared request instance has already shown the error; reload the active teammates and
+// the evaluator's saved evaluations so the form shows what was kept.
+async function reloadAfterRejectedSubmit() {
+  try {
+    await loadStudents()
+    await prepareStartingPeerEvaluations()
+  } finally {
     isLoading.value = false
   }
 }
