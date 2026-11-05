@@ -181,28 +181,30 @@ No delta. The `enabled` column of `PeerEvaluationUser` already exists; the only 
 
 ## Tests
 
-| Use case, flow | Level | Asserts |
-|---|---|---|
-| UC-STU-deactivate-student, main success (course admin) | integration (`StudentIntegrationTest`) | the course admin `PATCH`es → 200, `data.enabled` is false; a subsequent login as that student → 401 |
-| UC-STU-deactivate-student, main success (instructor of the course section) | integration | an instructor assigned to the student's course section → 200 |
-| UC-STU-deactivate-student, main success | unit (`StudentServiceTest`) | `enabled` is set to false and saved; the student's team is unchanged |
-| UC-STU-deactivate-student, 3a already deactivated | unit + integration | 409 `CONFLICT`; no save |
-| UC-STU-deactivate-student, 5a cancel | — | client-only, and no request is sent; no backend test |
-| UC-STU-deactivate-student, caller is a student (self or another) | integration | 403; `enabled` unchanged |
-| UC-STU-deactivate-student, instructor of another course section | integration | 403 |
-| UC-STU-deactivate-student, unknown student id | integration | 403 (guard fails closed) |
-| UC-STU-deactivate-student, course admin not assigned to the student's course section | integration | 200. The seed's course admin is assigned to section 1, so this needs a student in a course section of her course she is not assigned to; the main-success test alone would hide a manager that checked assignment only |
-| UC-STU-deactivate-student, course admin of another course | integration | 403; `enabled` unchanged |
-| UC-STU-deactivate-student, unauthenticated | integration | 401 |
-| UC-STU-deactivate-student, deactivated caller with a live token | integration | 401 (FR-SEC-active-account), before the route rule is consulted |
-| FR-SEC-active-account, live token | integration | a token obtained before deactivation, used on a protected route afterwards (e.g. `GET /students/{own id}`) → 401 |
-| FR-SEC-active-account, active account | unit (`ActiveAccountJwtAuthenticationConverterTest`) | an active user converts with the claim's authorities unchanged; a deactivated one, or a token with no `userId` claim, throws `DisabledException` |
-| UC-STU-deactivate-student, team membership kept | integration | after deactivation, `GET /students/teams/{teamId}` still lists the student, with `enabled` false |
-| BR-deactivated-evaluatee, evaluating a deactivated teammate | unit (`EvaluationServiceTest`) + integration | `POST /evaluations` and `PUT /evaluations/{evaluationId}` naming a deactivated evaluatee → 400; nothing saved |
-| BR-deactivated-evaluatee, evaluation written before deactivation | unit | it is still returned and still counts in the evaluatee's average |
-| BR-deactivated-evaluatee, section peer-evaluation report | unit (`EvaluationServiceTest`) | a deactivated student has a row for a week with evaluations of her and no row for a week without; an active student with no evaluations still has a 0.0 row |
-| UC-EVA-submit-evaluation step 2 (amended), form | manual / Cypress (no frontend unit tests exist) | after a teammate is deactivated, the peer evaluation form lists only the active teammates, self included; a form opened before her deactivation and then submitted saves the others, refuses hers, and reloads without her |
-| BR-submission-owed after deactivation | unit (`SubmissionStatusServiceTest`, existing case) | a teammate who evaluated every active member but not the deactivated one owes nothing. This case already exists; keep it green |
+| Use case, flow | Level | Asserts | Covered by |
+|---|---|---|---|
+| UC-STU-deactivate-student, main success (course admin) | integration (`StudentIntegrationTest`) | the course admin `PATCH`es → 200, `data.enabled` is false; a subsequent login as that student → 401 | ✅ `StudentIntegrationTest.testCourseAdminDeactivatesStudent` |
+| UC-STU-deactivate-student, main success (instructor of the course section) | integration | an instructor assigned to the student's course section → 200 | ✅ `StudentIntegrationTest.testSectionInstructorDeactivatesStudent` |
+| UC-STU-deactivate-student, main success | unit (`StudentServiceTest`) | `enabled` is set to false and saved; the student's team is unchanged | ✅ `StudentServiceTest.testDeactivateStudent` |
+| UC-STU-deactivate-student, 3a already deactivated | unit + integration | 409 `CONFLICT`; no save | ✅ `StudentServiceTest.testDeactivateStudentAlreadyDeactivated`, `StudentIntegrationTest.testDeactivateAlreadyDeactivatedStudent` |
+| UC-STU-deactivate-student, 5a cancel | — | client-only, and no request is sent; no backend test | ❌ Not covered: no frontend test harness; manual check only |
+| UC-STU-deactivate-student, caller is a student (self or another) | integration | 403; `enabled` unchanged | ✅ `StudentIntegrationTest.testStudentCannotDeactivateHerself`, `testStudentCannotDeactivateAnotherStudent` |
+| UC-STU-deactivate-student, instructor of another course section | integration | 403 | ✅ `StudentIntegrationTest.testInstructorOfAnotherSectionCannotDeactivateStudent` |
+| UC-STU-deactivate-student, unknown student id | integration | 403 (guard fails closed) | ✅ `StudentIntegrationTest.testDeactivateUnknownStudent` |
+| UC-STU-deactivate-student, course admin not assigned to the student's course section | integration | 200. The seed's course admin is assigned to section 1, so this needs a student in a course section of her course she is not assigned to; the main-success test alone would hide a manager that checked assignment only | ✅ `StudentIntegrationTest.testCourseAdminNotAssignedToSectionDeactivatesStudent` |
+| UC-STU-deactivate-student, course admin of another course | integration | 403; `enabled` unchanged | ✅ `StudentIntegrationTest.testCourseAdminOfAnotherCourseCannotDeactivateStudent` |
+| UC-STU-deactivate-student, unauthenticated | integration | 401 | ✅ `StudentIntegrationTest.testUnauthenticatedCannotDeactivateStudent` |
+| UC-STU-deactivate-student, deactivated caller with a live token | integration | 401 (FR-SEC-active-account), before the route rule is consulted | ✅ `StudentIntegrationTest.testDeactivatedInstructorCannotDeactivateStudent` |
+| FR-SEC-active-account, live token | integration | a token obtained before deactivation, used on a protected route afterwards (e.g. `GET /students/{own id}`) → 401 | ✅ `ActiveAccountIntegrationTest.deactivatedStudentTokenIsRefused` (also `deactivatedInstructorTokenIsRefused`) |
+| FR-SEC-active-account, active account | unit (`ActiveAccountJwtAuthenticationConverterTest`) | an active user converts with the claim's authorities unchanged; a deactivated one, or a token with no `userId` claim, throws `DisabledException` | ✅ `ActiveAccountJwtAuthenticationConverterTest.activeAccountConverts`, `deactivatedAccountIsRefused`, `tokenWithoutUserIdIsRefused` |
+| UC-STU-deactivate-student, team membership kept | integration | after deactivation, `GET /students/teams/{teamId}` still lists the student, with `enabled` false | ✅ `StudentIntegrationTest.testDeactivatedStudentStaysOnHerTeam` |
+| BR-deactivated-evaluatee, evaluating a deactivated teammate | unit (`EvaluationServiceTest`) + integration | `POST /evaluations` and `PUT /evaluations/{evaluationId}` naming a deactivated evaluatee → 400; nothing saved | ✅ `EvaluationServiceTest.testAddPeerEvaluationOfDeactivatedTeammate`, `testUpdatePeerEvaluationOfDeactivatedTeammate`; `EvaluationIntegrationTest.testStudentJohnCannotAddEvaluationOfDeactivatedTeammate`, `testEvaluatorJohnCannotUpdateEvaluationOfDeactivatedTeammate` |
+| BR-deactivated-evaluatee, evaluation written before deactivation | unit | it is still returned and still counts in the evaluatee's average | ✅ `EvaluationServiceTest.testGetPeerEvaluationAverageCountsEvaluationsWrittenBeforeDeactivation`. Counting is asserted; "still returned" only through the average's comments |
+| BR-deactivated-evaluatee, section peer-evaluation report | unit (`EvaluationServiceTest`) | a deactivated student has a row for a week with evaluations of her and no row for a week without; an active student with no evaluations still has a 0.0 row | ✅ `EvaluationServiceTest.testWeeklyReportListsDeactivatedStudentOnlyForWeeksSheWasEvaluated` |
+| UC-EVA-submit-evaluation step 2 (amended), form | manual / Cypress (no frontend unit tests exist) | after a teammate is deactivated, the peer evaluation form lists only the active teammates, self included; a form opened before her deactivation and then submitted saves the others, refuses hers, and reloads without her | ❌ Not covered: manual / Cypress, not run |
+| BR-submission-owed after deactivation | unit (`SubmissionStatusServiceTest`, existing case) | a teammate who evaluated every active member but not the deactivated one owes nothing. This case already exists; keep it green | ✅ `SubmissionStatusServiceTest.testPeerEvaluationOwedUntilEveryActiveTeammateIncludingSelfIsEvaluated` (existing; green in the full suite) |
+
+18 of 20 rows are covered by a passing automated test. The two not covered are client-only (extension 5a, the evaluation form).
 
 Fixtures: the integration tests use the `DataInitializer` seed (course admin `b.wei@abc.edu`, an instructor assigned to the student's course section, an instructor of another course section, students). Each test that deactivates a seed student must leave the seed as it found it, following the existing isolation pattern of `StudentIntegrationTest`. Extension 3a deactivates first, then repeats the request. Tokens come from the existing login helper of the integration tests.
 
