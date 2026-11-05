@@ -136,11 +136,13 @@ public class StudentService {
     public Student deactivateStudent(Integer studentId) {
         Student student = this.studentRepository.findById(studentId)
                 .orElseThrow(() -> new ObjectNotFoundException("student", studentId));
-        if (!student.isEnabled()) {
+        // Check-and-set in one conditional UPDATE: a separate read then write would let two concurrent requests
+        // both see her enabled and both succeed, instead of the loser getting extension 3a's 409.
+        if (this.studentRepository.disableIfEnabled(studentId) == 0) {
             throw new StudentAlreadyDeactivatedException();
         }
-        student.setEnabled(false);
-        return this.studentRepository.save(student);
+        student.setEnabled(false); // keep the loaded entity in step with the row
+        return student;
     }
 
     public void deleteStudent(Integer studentId) {

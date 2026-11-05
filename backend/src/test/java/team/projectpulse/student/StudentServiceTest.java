@@ -201,7 +201,7 @@ class StudentServiceTest {
         Team team1 = new Team("Team1", "Team 1 description", "https://www.team1.com");
         team1.addStudent(john);
         given(this.studentRepository.findById(1)).willReturn(Optional.of(john));
-        given(this.studentRepository.save(john)).willReturn(john);
+        given(this.studentRepository.disableIfEnabled(1)).willReturn(1);
 
         // When
         Student deactivated = this.studentService.deactivateStudent(1);
@@ -209,7 +209,7 @@ class StudentServiceTest {
         // Then: only the enabled flag changes; she stays on her team (BR-student-lifecycle)
         assertThat(deactivated.isEnabled()).isFalse();
         assertThat(deactivated.getTeam()).isSameAs(team1);
-        verify(this.studentRepository, times(1)).save(john);
+        verify(this.studentRepository, times(1)).disableIfEnabled(1);
     }
 
     @Test
@@ -218,6 +218,7 @@ class StudentServiceTest {
         Student john = this.students.get(0);
         john.setEnabled(false);
         given(this.studentRepository.findById(1)).willReturn(Optional.of(john));
+        given(this.studentRepository.disableIfEnabled(1)).willReturn(0);
 
         // When
         Throwable thrown = catchThrowable(() -> this.studentService.deactivateStudent(1));
@@ -230,6 +231,20 @@ class StudentServiceTest {
     }
 
     @Test
+    void testDeactivateStudentLosesConcurrentRace() {
+        // Given: she was enabled when loaded, but a concurrent request deactivated her before this one's update
+        Student john = this.students.get(0);
+        given(this.studentRepository.findById(1)).willReturn(Optional.of(john));
+        given(this.studentRepository.disableIfEnabled(1)).willReturn(0);
+
+        // When
+        Throwable thrown = catchThrowable(() -> this.studentService.deactivateStudent(1));
+
+        // Then: the loser gets extension 3a, not a second success
+        assertThat(thrown).isInstanceOf(StudentAlreadyDeactivatedException.class);
+    }
+
+    @Test
     void testDeactivateStudentNotFound() {
         // Given
         given(this.studentRepository.findById(999)).willReturn(Optional.empty());
@@ -239,7 +254,7 @@ class StudentServiceTest {
 
         // Then
         assertThat(thrown).isInstanceOf(ObjectNotFoundException.class);
-        verify(this.studentRepository, never()).save(any(Student.class));
+        verify(this.studentRepository, never()).disableIfEnabled(anyInt());
     }
 
 }
